@@ -1,11 +1,14 @@
 ## DummyServer
 
-DummyServer is a server that provides mock API interfaces as provided via the
-json configuration.
+DummyServer provides mock application interfaces.
 
-It's main purpose is to be able to mock server side APIs, without even having
-developed your real server yet. This can be very useful when rapidly prototyping
-client software, e.g. for presentations.
+It's main purpose is to be able to mock APIs without even having developed your
+actual server yet.
+This can be very useful when rapidly prototyping client software, e.g. for
+presentations.
+
+Additionally it provides the ability to mock calls for testing purposes,
+including advanced template functionality.
 
 ## Usage
 
@@ -13,52 +16,77 @@ Download and install the DummyServer into `$GOPATH/bin` (don't forget to add
 this directory to your `$PATH`, if you haven't already).
 
 ```shell
-$> go get github.com/ms-xy/DummyServer
+$> go get github.com/ms-xy/dummyserver
 ```
 
-Configure it in **any** working directory (it will always read from the current
-working directory, so where you put this config is wholly up to you).
-
-You may specify as many responses as you like. However, be aware that clashes
-of URL configurations will result in runtime panics, thrown by the httprouter
-package.
-
-The config file name is `dummyserver.conf`.
-
-```json
-{
-    "Binding": {
-        "IP": "0.0.0.0",
-        "Port": 7779
-    },
-    "Responses": [
-        {
-            "comment": "See https://godoc.org/github.com/julienschmidt/httprouter for infos on the url format",
-            "Url": "/*anything",
-            "Response": {
-                "HttpStatusCode": 200,
-                "Headers": [
-                    {
-                        "Key": "Content-Type",
-                        "Value": "text/json; charset=utf-8"
-                    }
-                ],
-                "Body": "{}"
-            }
-        }
-    ]
-}
-```
-
-Run the server. It will automatically use the configuration in the current
-directory.
+Create a configuration file `dummyserver.yaml`, open a terminal at the
+location and start DummyServer.
 
 ```shell
-$> DummyServer
+$> ./dummyserver
+```
+
+### Configuration
+
+The template functionality is exactly Go's `text/template` with one additional
+function: `byName` which allows searching the path slice for a specific URL
+param.
+
+Local variables exported to the template are:
+```
+path: []string // searchable using byName .path pathVariableName
+data: map[string]any
+__request__: map[string]any{
+        "status": response.StatusCode,
+        "body": responseBody,
+        "data": responseData,
+        "headers": response.Header.Clone(),
+    }
+```
+
+Example config showing some of the available flexibility:
+
+```yaml
+server:
+    ip: "127.0.0.1"
+    port: 8080
+endpoints:
+    - url: /hello/:world
+      method: GET
+      actions:
+        - type: response
+          params:
+            status: 200
+            body:
+                Hello {{byName .path "world"}}
+            delay: 2000
+    - url: /whoami
+      method: POST
+      params:
+        parser: json
+      actions:
+        - type: request
+          params:
+            method: GET
+            url: http://127.0.0.1:8080/hello/{{.data.name}}
+        - type: response
+          params:
+            status: "{{.data.__request__.status}}"
+            body: "{{.data.__request__.body}}"
+
+```
+
+Note that strings may need quotation marks if their being missing could confuse
+the yaml parser.
+
+You can try the above example config by using a second terminal to start a
+`curl` call to the `whoami` endpoint that has been started:
+
+```shell
+$>  curl --request POST --data '{"name": "Mary"}' --header "Content-Type: text/json" 127.0.0.1:8080/whoami
 ```
 
 ## License
 
 The DummyServer is licensed under GNU GPLv3.
 Please see the attached License.txt file for details.
-Different license terms can be arranged on request.
