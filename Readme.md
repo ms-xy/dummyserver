@@ -34,12 +34,12 @@ param.
 
 Local variables exported to the template are:
 ```
-path: []string // searchable using byName .path pathVariableName
+path: map[string]string
 data: map[string]any
 __request__: map[string]any{
         "status": response.StatusCode,
         "body": responseBody,
-        "data": responseData,
+        "data": parsedJsonOrYamlResponseData,
         "headers": response.Header.Clone(),
     }
 ```
@@ -58,7 +58,7 @@ endpoints:
           params:
             status: 200
             body:
-                Hello {{byName .path "world"}}
+                Hello {{.path.world}}
             delay: 2000
     - url: /whoami
       method: POST
@@ -71,8 +71,8 @@ endpoints:
             url: http://127.0.0.1:8080/hello/{{.data.name}}
         - type: response
           params:
-            status: "{{.data.__request__.status}}"
-            body: "{{.data.__request__.body}}"
+            status: "{{.__request__.status}}"
+            body: "{{.__request__.body}}"
 
 ```
 

@@ -111,33 +111,55 @@ type ActionHandler func(requestId string, response http.ResponseWriter, request 
 func newEndpointHandler(endpoint EndpointStruct) func(http.ResponseWriter, *http.Request, httprouter.Params) {
     actionHandlers := createActionHandlers(endpoint.Actions)
     return func(response http.ResponseWriter, request *http.Request, params httprouter.Params) {
-        requestId := uuid.Must(uuid.NewRandom()).String()
-        var body string = ""
-        var data map[string]interface{} = make(map[string]interface{})
+        var (
+            requestId    = uuid.Must(uuid.NewRandom()).String()
+            body         = ""
+            bodyData     = make(map[string]interface{})
+            pathData     = make(map[string]string)
+            mergedData   map[string]interface{}
+        )
         log.Printf("[%s] %s %s [size=%d]", requestId, request.Method, request.RequestURI, request.ContentLength)
         if request.Method == "POST" || request.Method == "PUT" {
             if request.Body != nil {
                 defer request.Body.Close()
                 if bytesBody, err := io.ReadAll(request.Body); err != nil {
-                    log.Fatal(err)
+                    panic(err)
                 } else {
                     body = string(bytesBody)
                     switch endpoint.Params.Parser {
                     case "json":
-                        if err := json.Unmarshal(bytesBody, &data); err != nil {
-                            log.Fatal(err)
+                        if err := json.Unmarshal(bytesBody, &bodyData); err != nil {
+                                panic(fmt.Errorf("[%s] %v:\n%v", requestId, err, string(bytesBody)))
                         }
                     case "yaml":
-                        if err := yaml.Unmarshal(bytesBody, &data); err != nil {
-                            log.Fatal(err)
+                        if err := yaml.Unmarshal(bytesBody, &bodyData); err != nil {
+                                panic(fmt.Errorf("[%s] %v:\n%v", requestId, err, string(bytesBody)))
                         }
                     default:
+                        contentType := request.Header.Get("Content-Type")
+                        switch contentType {
+                        case "text/json":
+                            if err := json.Unmarshal(bytesBody, &bodyData); err != nil {
+                                panic(fmt.Errorf("[%s] %v:\n%v", requestId, err, string(bytesBody)))
+                            }
+                        case "text/yaml":
+                            if err := yaml.Unmarshal(bytesBody, &bodyData); err != nil {
+                                panic(fmt.Errorf("[%s] %v:\n%v", requestId, err, string(bytesBody)))
+                            }
+                        }
                     }
                 }
             }
         }
+        for _, param := range params {
+            pathData[param.Key] = param.Value
+        }
+        mergedData = map[string]interface{}{
+            "data": bodyData,
+            "path": pathData,
+        }
         for _, action := range actionHandlers {
-            action(requestId, response, request, params, body, data)
+            action(requestId, response, request, params, body, mergedData)
         }
     }
 }
@@ -158,15 +180,15 @@ func createActionHandlers(actions []ActionStruct) []ActionHandler {
 }
 
 var templateFuncs = template.FuncMap{
-    "byName": func(params httprouter.Params, name string) string {
-        return params.ByName(name)
-    },
+    // "byName": func(params httprouter.Params, name string) string {
+    //     return params.ByName(name)
+    // },
 }
 
 func fromTemplate(tpl string, data map[string]interface{}) string {
     buf := bytes.NewBuffer([]byte{})
     if err := template.Must(template.New("tmp").Funcs(templateFuncs).Parse(tpl)).Execute(buf, data); err != nil {
-        log.Fatal(err)
+        panic(err)
     }
     return buf.String()
 }
@@ -175,18 +197,20 @@ func newResponseActionHandler(config map[string]interface{}) ActionHandler {
     var (
         configMap    = PathAccessor{config: config}
         status       = configMap.Get("status", 200)
-        headers      = configMap.Get("headers", map[string]interface{}{}).(map[string]interface{})
+        headers      = configMap.Get("headers", []interface{}{}).([]interface{})
         responseBody = configMap.Get("body", "HTTP 200 OK").(string)
         delay        = configMap.Get("delay", 0).(int)
     )
     log.Printf("| {action:response=[%v]%v/%s/%v}", status, headers, responseBody, delay)
-    return func(requestId string, response http.ResponseWriter, request *http.Request, params httprouter.Params, requestBody string, data map[string]interface{}) {
-        mergedData := map[string]interface{}{
-            "path": params,
-            "data": data,
-        }
-        for key, value := range headers {
-            response.Header().Set(fromTemplate(key, mergedData), fromTemplate(value.(string), mergedData))
+    return func(requestId string, response http.ResponseWriter, request *http.Request, params httprouter.Params, requestBody string, mergedData map[string]interface{}) {
+        for _, header := range headers {
+            if headerMap, ok := header.(map[string]interface{}); !ok || len(headerMap) > 1 {
+                panic(fmt.Errorf("invalid header entry in config: %v", header))
+            } else {
+                for key, value := range headerMap {
+                    response.Header().Set(fromTemplate(key, mergedData), fromTemplate(value.(string), mergedData))
+                }
+            }
         }
         if delay > 0 {
             time.Sleep(time.Duration(delay) * time.Millisecond)
@@ -196,7 +220,7 @@ func newResponseActionHandler(config map[string]interface{}) ActionHandler {
         if statusInt, ok := status.(int); ok {
             response.WriteHeader(statusInt)
         } else if statusInt, err := strconv.ParseInt(fromTemplate(status.(string), mergedData), 10, 32); err != nil {
-            log.Fatalf("[%s] %v", requestId, err)
+            panic(fmt.Errorf("[%s] %v", requestId, err))
         } else {
             response.WriteHeader(int(statusInt))
         }
@@ -209,32 +233,34 @@ func newRequestActionHandler(configMap map[string]interface{}) ActionHandler {
         config       = PathAccessor{config: configMap}
         method       = config.Get("method", "GET").(string)
         url          = config.Get("url", "").(string)
-        headers      = config.Get("headers", map[string]interface{}{}).(map[string]interface{})
+        headers      = config.Get("headers", []interface{}{}).([]interface{})
         bodyTemplate = config.Get("body", "HTTP 200 OK").(string)
         delay        = config.Get("delay", 0).(int)
     )
     if url == "" {
-        log.Fatal("config error: cannot have an empty request url for a request action")
+        panic("config error: cannot have an empty request url for a request action")
     }
     log.Printf("| {action:request=%v/%v/%v/%v/%v}", method, url, headers, bodyTemplate, delay)
-    return func(requestId string, response http.ResponseWriter, request *http.Request, params httprouter.Params, origRequestBody string, data map[string]interface{}) {
-        mergedData := map[string]interface{}{
-            "path": params,
-            "data": data,
-        }
+    return func(requestId string, response http.ResponseWriter, request *http.Request, params httprouter.Params, origRequestBody string, mergedData map[string]interface{}) {
         requestBody := fromTemplate(bodyTemplate, mergedData)
         if request, err := http.NewRequest(method, fromTemplate(url, mergedData), strings.NewReader(requestBody)); err != nil {
-            log.Fatalf("[%s] %v", requestId, err)
+            panic(fmt.Errorf("[%s] %v", requestId, err))
         } else {
-            for key, value := range headers {
-                request.Header.Add(fromTemplate(key, mergedData), fromTemplate(value.(string), mergedData))
+            for _, header := range headers {
+                if headerMap, ok := header.(map[string]interface{}); !ok || len(headerMap) > 1 {
+                    panic(fmt.Errorf("invalid header entry in config: %v", header))
+                } else {
+                    for key, value := range headerMap {
+                        request.Header.Add(fromTemplate(key, mergedData), fromTemplate(value.(string), mergedData))
+                    }
+                }
             }
             if delay > 0 {
                 time.Sleep(time.Duration(delay) * time.Millisecond)
             }
             log.Printf("[%s] %s %s: %v", requestId, request.Method, request.URL, request)
             if response, err := http.DefaultClient.Do(request); err != nil {
-                log.Fatalf("[%s] ERROR %s %s: %v", requestId, request.Method, request.URL, response)
+                panic(fmt.Errorf("[%s] ERROR %s %s: %v", requestId, request.Method, request.URL, err))
             } else {
                 log.Printf("[%s] Result %s %s: %v", requestId, request.Method, request.URL, response)
                 responseBody := ""
@@ -242,7 +268,7 @@ func newRequestActionHandler(configMap map[string]interface{}) ActionHandler {
                 if response.Body != nil {
                     defer response.Request.Body.Close()
                     if bytes, err := io.ReadAll(response.Body); err != nil {
-                        log.Fatalf("[%s] %v", requestId, err)
+                        panic(fmt.Errorf("[%s] %v", requestId, err))
                     } else {
                         responseBody = string(bytes)
                     }
@@ -250,15 +276,15 @@ func newRequestActionHandler(configMap map[string]interface{}) ActionHandler {
                     switch contentType {
                     case "text/json":
                         if err := json.Unmarshal([]byte(responseBody), &responseData); err != nil {
-                            log.Fatalf("[%s] %v", requestId, err)
+                            panic(fmt.Errorf("[%s] %v", requestId, err))
                         }
                     case "text/yaml":
                         if err := yaml.Unmarshal([]byte(responseBody), &responseData); err != nil {
-                            log.Fatalf("[%s] %v", requestId, err)
+                            panic(fmt.Errorf("[%s] %v", requestId, err))
                         }
                     }
                 }
-                data["__request__"] = map[string]interface{}{
+                mergedData["__request__"] = map[string]interface{}{
                     "status": response.StatusCode,
                     "body": responseBody,
                     "data": responseData,
@@ -277,12 +303,10 @@ func (pathAccessor *PathAccessor) Get(path string, defaultValue interface{}) int
     var getRecursive func(map[string]interface{}, []string) interface{}
     getRecursive = func (_map map[string]interface{}, _parts []string) interface{} {
         if _value, _ok := _map[_parts[0]]; !_ok {
-            //log.Printf("config %s not found, defaulting to %v", path, defaultValue)
             return defaultValue
         } else if len(_parts) == 1 {
             return _value
         } else if _actMap, _ok := _value.(map[string]interface{}); !_ok {
-            //log.Printf("config %s is not an object/map -> error accessing %s", _parts[0], path)
             return defaultValue
         } else {
             return getRecursive(_actMap, _parts[1:])
