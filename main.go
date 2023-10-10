@@ -89,6 +89,8 @@ func main() {
             router.GET(endpoint.Url, newEndpointHandler(endpoint))
         case "POST":
             router.POST(endpoint.Url, newEndpointHandler(endpoint))
+        case "PUT":
+            router.PUT(endpoint.Url, newEndpointHandler(endpoint))
         default:
             log.Fatalf("Unsupported endpoint method type '%s' for %s", endpoint.Method, endpoint.Url)
         }
@@ -113,7 +115,7 @@ func newEndpointHandler(endpoint EndpointStruct) func(http.ResponseWriter, *http
         var body string = ""
         var data map[string]interface{} = make(map[string]interface{})
         log.Printf("[%s] %s %s [size=%d]", requestId, request.Method, request.RequestURI, request.ContentLength)
-        if request.Method == "POST" {
+        if request.Method == "POST" || request.Method == "PUT" {
             if request.Body != nil {
                 defer request.Body.Close()
                 if bytesBody, err := io.ReadAll(request.Body); err != nil {
@@ -173,7 +175,7 @@ func newResponseActionHandler(config map[string]interface{}) ActionHandler {
     var (
         configMap    = PathAccessor{config: config}
         status       = configMap.Get("status", 200)
-        headers      = configMap.Get("headers", map[string]string{}).(map[string]string)
+        headers      = configMap.Get("headers", map[string]interface{}{}).(map[string]interface{})
         responseBody = configMap.Get("body", "HTTP 200 OK").(string)
         delay        = configMap.Get("delay", 0).(int)
     )
@@ -184,7 +186,7 @@ func newResponseActionHandler(config map[string]interface{}) ActionHandler {
             "data": data,
         }
         for key, value := range headers {
-            response.Header().Set(fromTemplate(key, mergedData), fromTemplate(value, mergedData))
+            response.Header().Set(fromTemplate(key, mergedData), fromTemplate(value.(string), mergedData))
         }
         if delay > 0 {
             time.Sleep(time.Duration(delay) * time.Millisecond)
@@ -207,7 +209,7 @@ func newRequestActionHandler(configMap map[string]interface{}) ActionHandler {
         config       = PathAccessor{config: configMap}
         method       = config.Get("method", "GET").(string)
         url          = config.Get("url", "").(string)
-        headers      = config.Get("headers", map[string]string{}).(map[string]string)
+        headers      = config.Get("headers", map[string]interface{}{}).(map[string]interface{})
         bodyTemplate = config.Get("body", "HTTP 200 OK").(string)
         delay        = config.Get("delay", 0).(int)
     )
@@ -225,7 +227,7 @@ func newRequestActionHandler(configMap map[string]interface{}) ActionHandler {
             log.Fatalf("[%s] %v", requestId, err)
         } else {
             for key, value := range headers {
-                request.Header.Add(fromTemplate(key, mergedData), fromTemplate(value, mergedData))
+                request.Header.Add(fromTemplate(key, mergedData), fromTemplate(value.(string), mergedData))
             }
             if delay > 0 {
                 time.Sleep(time.Duration(delay) * time.Millisecond)
